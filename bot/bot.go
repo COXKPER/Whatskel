@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/mdp/qrterminal/v3"
 	"github.com/neoncorp/Whatskel/config"
 	"github.com/neoncorp/Whatskel/plugins"
 
@@ -32,7 +34,7 @@ func New(cfg *config.Config) (*Bot, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	dbLog := waLog.Noop
-	storeContainer, err := sqlstore.New(ctx, "sqlite3", "file:"+cfg.Bot.DbPath+"?_pragma=foreign_keys(1)", dbLog)
+	storeContainer, err := sqlstore.New(ctx, "sqlite", "file:"+cfg.Bot.DbPath+"?_pragma=foreign_keys(1)", dbLog)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create store: %w", err)
@@ -97,11 +99,13 @@ func (b *Bot) Start() error {
 			return fmt.Errorf("failed to get QR channel: %w", err)
 		}
 		go func() {
-			fmt.Println("Scan the QR code with WhatsApp to log in:")
+			fmt.Println("Scan the QR code below with WhatsApp (Linked Devices):")
 			for item := range qrChan {
 				switch item.Event {
 				case "code":
-					fmt.Println("QR Code:", item.Code)
+					fmt.Println()
+					qrterminal.GenerateHalfBlock(item.Code, qrterminal.L, os.Stdout)
+					fmt.Println()
 				case "timeout":
 					fmt.Println("QR code timed out, restart needed")
 				case "success":
