@@ -65,6 +65,16 @@ func (b *Bot) Start() error {
 		switch v := evt.(type) {
 		case *events.Message:
 			b.handleMessage(v)
+		case *events.Disconnected:
+			log.Println("Disconnected from WhatsApp. Attempting to auto-reconnect...")
+			if err := b.client.Connect(); err != nil {
+				log.Printf("Auto-reconnect failed: %v", err)
+			}
+		case *events.CallOffer:
+			log.Printf("Incoming call received from %s. Rejecting...", v.CallCreator)
+			if err := b.client.RejectCall(b.ctx, v.CallCreator, v.CallID); err != nil {
+				log.Printf("Failed to reject call: %v", err)
+			}
 		}
 	})
 
@@ -161,15 +171,27 @@ func (b *Bot) handleMessage(v *events.Message) {
 		return err
 	}
 
+	deleteFn := func() error {
+		_, err := b.client.RevokeMessage(b.ctx, chatJID, v.Info.ID)
+		return err
+	}
+
+	senderName := v.Info.PushName
+	if senderName == "" {
+		senderName = v.Info.Sender.User
+	}
+
 	ctx := &plugins.Context{
 		Message:    msg,
 		Sender:     v.Info.Sender.String(),
+		SenderName: senderName,
 		Chat:       chatJID.String(),
 		Args:       args,
 		Prefix:     prefix,
 		Reply:      replyFn,
 		ReplyQuote: replyQuoteFn,
 		React:      reactFn,
+		Delete:     deleteFn,
 	}
 
 	if !b.plugins.Dispatch(cmdName, ctx) {

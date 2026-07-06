@@ -12,12 +12,14 @@ import (
 type Context struct {
 	Message    string
 	Sender     string
+	SenderName string
 	Chat       string
 	Args       string
 	Prefix     string
 	Reply      func(text string) error
 	ReplyQuote func(text string) error
 	React      func(emoji string) error
+	Delete     func() error
 }
 
 type Loader struct {
@@ -51,6 +53,8 @@ func contextIndex(L *lua.LState) int {
 		L.Push(lua.LString(ctx.Message))
 	case "Sender":
 		L.Push(lua.LString(ctx.Sender))
+	case "SenderName":
+		L.Push(lua.LString(ctx.SenderName))
 	case "Chat":
 		L.Push(lua.LString(ctx.Chat))
 	case "Args":
@@ -63,6 +67,8 @@ func contextIndex(L *lua.LState) int {
 		L.Push(L.NewFunction(contextReplyQuote))
 	case "React":
 		L.Push(L.NewFunction(contextReact))
+	case "DeleteMessage":
+		L.Push(L.NewFunction(contextDelete))
 	default:
 		L.Push(lua.LNil)
 	}
@@ -97,6 +103,16 @@ func contextReact(L *lua.LState) int {
 	if ctx.React != nil {
 		if err := ctx.React(emoji); err != nil {
 			log.Printf("React error: %v", err)
+		}
+	}
+	return 0
+}
+
+func contextDelete(L *lua.LState) int {
+	ctx := checkContext(L)
+	if ctx.Delete != nil {
+		if err := ctx.Delete(); err != nil {
+			log.Printf("DeleteMessage error: %v", err)
 		}
 	}
 	return 0
