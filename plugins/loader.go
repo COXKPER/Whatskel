@@ -13,6 +13,7 @@ type Context struct {
 	Message    string
 	Sender     string
 	SenderName string
+	IsGroup    bool
 	Chat       string
 	Args       string
 	Prefix     string
@@ -55,6 +56,8 @@ func contextIndex(L *lua.LState) int {
 		L.Push(lua.LString(ctx.Sender))
 	case "SenderName":
 		L.Push(lua.LString(ctx.SenderName))
+	case "IsGroup":
+		L.Push(lua.LBool(ctx.IsGroup))
 	case "Chat":
 		L.Push(lua.LString(ctx.Chat))
 	case "Args":
@@ -175,4 +178,18 @@ func (l *Loader) Dispatch(cmd string, ctx *Context) bool {
 		return false
 	}
 	return true
+}
+
+// GetCommands returns a list of all registered command names.
+func (l *Loader) GetCommands() []string {
+	cmds := make([]string, 0, len(l.commands))
+	for name := range l.commands {
+		cmds = append(cmds, name)
+	}
+	return cmds
+}
+
+// Close shuts down the Lua state gracefully.
+func (l *Loader) Close() {
+	l.L.Close()
 }

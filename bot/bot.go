@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/neoncorp/Whatskel/config"
 	"github.com/neoncorp/Whatskel/plugins"
@@ -67,9 +68,21 @@ func (b *Bot) Start() error {
 			b.handleMessage(v)
 		case *events.Disconnected:
 			log.Println("Disconnected from WhatsApp. Attempting to auto-reconnect...")
-			if err := b.client.Connect(); err != nil {
-				log.Printf("Auto-reconnect failed: %v", err)
-			}
+			go func() {
+				backoff := 2 * time.Second
+				for i := 0; i < 5; i++ {
+					time.Sleep(backoff)
+					log.Printf("Reconnect attempt %d/5...", i+1)
+					if err := b.client.Connect(); err != nil {
+						log.Printf("Reconnect attempt %d failed: %v", i+1, err)
+						backoff *= 2
+						continue
+					}
+					log.Println("Reconnected to WhatsApp successfully!")
+					return
+				}
+				log.Println("Failed to reconnect after 5 attempts. Manual restart required.")
+			}()
 		case *events.CallOffer:
 			log.Printf("Incoming call received from %s. Rejecting...", v.CallCreator)
 			if err := b.client.RejectCall(b.ctx, v.CallCreator, v.CallID); err != nil {
@@ -110,10 +123,16 @@ func (b *Bot) Start() error {
 
 func (b *Bot) Stop() {
 	b.cancel()
+	b.plugins.Close()
 	b.client.Disconnect()
 }
 
 func (b *Bot) handleMessage(v *events.Message) {
+	// Skip messages sent by the bot itself
+	if v.Info.IsFromMe {
+		return
+	}
+
 	msg := v.Message.GetConversation()
 	if msg == "" {
 		if v.Message.GetExtendedTextMessage() != nil {
@@ -181,10 +200,13 @@ func (b *Bot) handleMessage(v *events.Message) {
 		senderName = v.Info.Sender.User
 	}
 
+	isGroup := v.Info.Chat.Server == "g.us"
+
 	ctx := &plugins.Context{
 		Message:    msg,
 		Sender:     v.Info.Sender.String(),
 		SenderName: senderName,
+		IsGroup:    isGroup,
 		Chat:       chatJID.String(),
 		Args:       args,
 		Prefix:     prefix,
