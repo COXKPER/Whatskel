@@ -1,0 +1,7 @@
+[bot]
+prefix = "."
+session_path = "whatsapp-session.db"
+db_path = "whatsapp-store.db"
+
+[plugins]
+directory = "plugins"
