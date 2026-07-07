@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
@@ -131,6 +133,81 @@ func (b *Bot) Stop() {
 	b.client.Disconnect()
 }
 
+// parseTargetJID accepts either a full JID ("628xxx@s.whatsapp.net" /
+// "120363xxx@g.us") or a bare phone number ("628xxx"), defaulting bare
+// numbers to the standard user server.
+func parseTargetJID(raw string) (types.JID, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return types.JID{}, fmt.Errorf("empty JID/number")
+	}
+	if !strings.Contains(raw, "@") {
+		raw = raw + "@s.whatsapp.net"
+	}
+	return types.ParseJID(raw)
+}
+
+// uploadAndSendImage uploads local image bytes and sends an ImageMessage
+// to targetJID.
+func (b *Bot) uploadAndSendImage(targetJID types.JID, path, caption string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read image file: %w", err)
+	}
+
+	uploaded, err := b.client.Upload(b.ctx, data, whatsmeow.MediaImage)
+	if err != nil {
+		return fmt.Errorf("failed to upload image: %w", err)
+	}
+
+	mimetype := http.DetectContentType(data)
+
+	imgMsg := &waE2E.Message{
+		ImageMessage: &waE2E.ImageMessage{
+			Caption:       proto.String(caption),
+			Mimetype:      proto.String(mimetype),
+			URL:           proto.String(uploaded.URL),
+			DirectPath:    proto.String(uploaded.DirectPath),
+			MediaKey:      uploaded.MediaKey,
+			FileEncSHA256: uploaded.FileEncSHA256,
+			FileSHA256:    uploaded.FileSHA256,
+			FileLength:    proto.Uint64(uploaded.FileLength),
+		},
+	}
+
+	_, err = b.client.SendMessage(b.ctx, targetJID, imgMsg)
+	return err
+}
+
+// uploadAndSendSticker uploads local sticker bytes (expects a valid .webp)
+// and sends a StickerMessage to targetJID.
+func (b *Bot) uploadAndSendSticker(targetJID types.JID, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read sticker file: %w", err)
+	}
+
+	uploaded, err := b.client.Upload(b.ctx, data, whatsmeow.MediaImage)
+	if err != nil {
+		return fmt.Errorf("failed to upload sticker: %w", err)
+	}
+
+	stickerMsg := &waE2E.Message{
+		StickerMessage: &waE2E.StickerMessage{
+			Mimetype:      proto.String("image/webp"),
+			URL:           proto.String(uploaded.URL),
+			DirectPath:    proto.String(uploaded.DirectPath),
+			MediaKey:      uploaded.MediaKey,
+			FileEncSHA256: uploaded.FileEncSHA256,
+			FileSHA256:    uploaded.FileSHA256,
+			FileLength:    proto.Uint64(uploaded.FileLength),
+		},
+	}
+
+	_, err = b.client.SendMessage(b.ctx, targetJID, stickerMsg)
+	return err
+}
+
 func (b *Bot) handleMessage(v *events.Message) {
 	// Skip messages sent by the bot itself
 	if v.Info.IsFromMe {
@@ -199,6 +276,31 @@ func (b *Bot) handleMessage(v *events.Message) {
 		return err
 	}
 
+	// Sends an image to the CURRENT chat (same chat the command was invoked in).
+	replyImageFn := func(path, caption string) error {
+		return b.uploadAndSendImage(chatJID, path, caption)
+	}
+
+	// Sends a sticker to the CURRENT chat.
+	replyStickerFn := func(path string) error {
+		return b.uploadAndSendSticker(chatJID, path)
+	}
+
+	// Sends a plain text message to an ARBITRARY user, independent of the
+	// chat the command was invoked in. Accepts a bare number ("628xxx")
+	// or a full JID ("628xxx@s.whatsapp.net").
+	sendPrivateMessageFn := func(targetRaw, text string) error {
+		targetJID, err := parseTargetJID(targetRaw)
+		if err != nil {
+			return fmt.Errorf("invalid JID/number %q: %w", targetRaw, err)
+		}
+		privMsg := &waE2E.Message{
+			Conversation: proto.String(text),
+		}
+		_, err = b.client.SendMessage(b.ctx, targetJID, privMsg)
+		return err
+	}
+
 	senderName := v.Info.PushName
 	if senderName == "" {
 		senderName = v.Info.Sender.User
@@ -207,17 +309,20 @@ func (b *Bot) handleMessage(v *events.Message) {
 	isGroup := v.Info.Chat.Server == "g.us"
 
 	ctx := &plugins.Context{
-		Message:    msg,
-		Sender:     v.Info.Sender.String(),
-		SenderName: senderName,
-		IsGroup:    isGroup,
-		Chat:       chatJID.String(),
-		Args:       args,
-		Prefix:     prefix,
-		Reply:      replyFn,
-		ReplyQuote: replyQuoteFn,
-		React:      reactFn,
-		Delete:     deleteFn,
+		Message:            msg,
+		Sender:             v.Info.Sender.String(),
+		SenderName:         senderName,
+		IsGroup:            isGroup,
+		Chat:               chatJID.String(),
+		Args:               args,
+		Prefix:             prefix,
+		Reply:              replyFn,
+		ReplyQuote:         replyQuoteFn,
+		React:              reactFn,
+		Delete:             deleteFn,
+		ReplyImage:         replyImageFn,
+		ReplySticker:       replyStickerFn,
+		SendPrivateMessage: sendPrivateMessageFn,
 	}
 
 	if !b.plugins.Dispatch(cmdName, ctx) {

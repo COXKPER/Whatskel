@@ -1,42 +1,44 @@
 # Whatskel Wiki — API Reference & Architecture Guide
 
-> Panduan lengkap untuk memahami arsitektur internal, sistem plugin, dan seluruh API yang tersedia pada Whatskel Bot.
+> Complete guide to understanding Whatskel Bot's internal architecture, plugin system, and the full API available to plugins.
 
 ---
 
 ## Table of Contents
 
-- [Arsitektur](#arsitektur)
-  - [Diagram Alur](#diagram-alur)
+- [Architecture](#architecture)
+  - [Flow Diagram](#flow-diagram)
   - [Go Core — `bot` package](#go-core--bot-package)
   - [Lua Loader — `plugins` package](#lua-loader--plugins-package)
-  - [Konfigurasi — `config` package](#konfigurasi--config-package)
+  - [Configuration — `config` package](#configuration--config-package)
 - [Lua API Reference](#lua-api-reference)
   - [Context Object (`ctx`)](#context-object-ctx)
   - [Properties](#properties)
   - [Methods](#methods)
-- [Fitur Built-in](#fitur-built-in)
+- [Built-in Features](#built-in-features)
   - [Auto-Reconnect](#auto-reconnect)
-  - [Auto-Reject Panggilan](#auto-reject-panggilan)
-  - [Ignore Self Message](#ignore-self-message)
-- [Panduan Membuat Plugin](#panduan-membuat-plugin)
-  - [Struktur Dasar Plugin](#struktur-dasar-plugin)
-  - [Contoh: Command Sederhana](#contoh-command-sederhana)
-  - [Contoh: Command dengan Argumen](#contoh-command-dengan-argumen)
-  - [Contoh: Greeting Personal](#contoh-greeting-personal)
-  - [Contoh: Group-Only Command](#contoh-group-only-command)
-  - [Contoh: Self-Destructing Command](#contoh-self-destructing-command)
-  - [Contoh: Multi-Command dalam Satu File](#contoh-multi-command-dalam-satu-file)
-- [Konfigurasi Bot](#konfigurasi-bot)
+  - [Auto-Reject Calls](#auto-reject-calls)
+  - [Ignore Self Messages](#ignore-self-messages)
+- [Writing a Plugin](#writing-a-plugin)
+  - [Basic Plugin Structure](#basic-plugin-structure)
+  - [Example: Simple Command](#example-simple-command)
+  - [Example: Command with Arguments](#example-command-with-arguments)
+  - [Example: Personal Greeting](#example-personal-greeting)
+  - [Example: Group-Only Command](#example-group-only-command)
+  - [Example: Self-Destructing Command](#example-self-destructing-command)
+  - [Example: Multiple Commands in One File](#example-multiple-commands-in-one-file)
+  - [Example: Sending Media (Image/Sticker)](#example-sending-media-imagesticker)
+  - [Example: Owner-Gated Private Messaging](#example-owner-gated-private-messaging)
+- [Bot Configuration](#bot-configuration)
 - [FAQ & Troubleshooting](#faq--troubleshooting)
 
 ---
 
-## Arsitektur
+## Architecture
 
-Whatskel dibangun dengan arsitektur modular yang memisahkan antara **Go core** (penanganan koneksi WhatsApp) dan **Lua plugins** (logika command). Hal ini memungkinkan pengembang menambahkan fitur tanpa perlu mengompilasi ulang binary.
+Whatskel is built on a modular architecture separating the **Go core** (WhatsApp connection handling) from **Lua plugins** (command logic). This lets developers add features without recompiling the binary.
 
-### Diagram Alur
+### Flow Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -63,7 +65,8 @@ Whatskel dibangun dengan arsitektur modular yang memisahkan antara **Go core** (
 │  │ Context Builder                          │           │
 │  │ Message, Sender, SenderName, Chat, Args, │           │
 │  │ Prefix, IsGroup, Reply, ReplyQuote,      │           │
-│  │ React, DeleteMessage                     │           │
+│  │ React, DeleteMessage, ReplyImage,        │           │
+│  │ ReplySticker, SendPrivateMessage         │           │
 │  └──────┬───────────────────────────────────┘           │
 └─────────┼───────────────────────────────────────────────┘
           │
@@ -85,48 +88,55 @@ Whatskel dibangun dengan arsitektur modular yang memisahkan antara **Go core** (
 
 ### Go Core — `bot` package
 
-File utama: [`bot/bot.go`](./bot/bot.go)
+Main file: [`bot/bot.go`](./bot/bot.go)
 
-Modul ini bertanggung jawab untuk:
+This module is responsible for:
 
-| Fungsi | Deskripsi |
+| Function | Description |
 |---|---|
-| `New(cfg)` | Inisialisasi client WhatsApp, database SQLite, dan plugin loader |
-| `Start()` | Mendaftarkan event handler, menampilkan QR code, dan menghubungkan ke WhatsApp |
-| `Stop()` | Menutup koneksi, membersihkan Lua state, dan membatalkan context |
-| `handleMessage(v)` | Menerima pesan masuk, mem-parsing command, membangun `Context`, dan men-dispatch ke Lua |
+| `New(cfg)` | Initializes the WhatsApp client, SQLite database, and plugin loader |
+| `Start()` | Registers event handlers, shows the QR code, and connects to WhatsApp |
+| `Stop()` | Closes the connection, cleans up Lua state, and cancels the context |
+| `handleMessage(v)` | Receives incoming messages, parses commands, builds the `Context`, and dispatches to Lua |
 
-Event handler menangani tiga jenis event:
-- **`events.Message`** → Diteruskan ke `handleMessage()` untuk parsing command.
-- **`events.Disconnected`** → Memicu auto-reconnect dengan exponential backoff.
-- **`events.CallOffer`** → Otomatis menolak panggilan masuk.
+The event handler covers three event types:
+- **`events.Message`** → forwarded to `handleMessage()` for command parsing.
+- **`events.Disconnected`** → triggers auto-reconnect with exponential backoff.
+- **`events.CallOffer`** → automatically rejects incoming calls.
+
+Two upload/send helpers back the media API exposed to Lua:
+- **`uploadAndSendImage(targetJID, path, caption)`** — reads a local file, uploads it via `client.Upload(ctx, data, whatsmeow.MediaImage)`, detects its MIME type, and sends a `waE2E.ImageMessage`.
+- **`uploadAndSendSticker(targetJID, path)`** — same upload flow, sends a `waE2E.StickerMessage` (expects a valid `.webp`).
+- **`parseTargetJID(raw)`** — normalizes a bare phone number (e.g. `"628123456789"`) into a full JID by appending `@s.whatsapp.net` when no `@` is present, otherwise parses the string as-is via `types.ParseJID`.
 
 ### Lua Loader — `plugins` package
 
-File utama: [`plugins/loader.go`](./plugins/loader.go)
+Main file: [`plugins/loader.go`](./plugins/loader.go)
 
-Modul ini bertanggung jawab untuk:
+This module is responsible for:
 
-| Fungsi | Deskripsi |
+| Function | Description |
 |---|---|
-| `NewLoader(dir)` | Membuat Lua VM baru, mendaftarkan metatable Context, dan menyiapkan fungsi `export()` |
-| `LoadAll()` | Memuat semua file `.lua` di dalam direktori plugin |
-| `Dispatch(cmd, ctx)` | Mencari command yang sesuai dan mengeksekusi handler Lua-nya |
-| `GetCommands()` | Mengembalikan daftar nama semua command yang terdaftar |
-| `Close()` | Menutup Lua state dengan aman |
+| `NewLoader(dir)` | Creates a new Lua VM, registers the Context metatable, and sets up `export()` |
+| `LoadAll()` | Loads every `.lua` file inside the plugin directory |
+| `Dispatch(cmd, ctx)` | Finds the matching command and executes its Lua handler |
+| `GetCommands()` | Returns the list of all registered command names |
+| `Close()` | Safely closes the Lua state |
 
-**Bagaimana Context Bekerja di Lua:**
+**How Context works in Lua:**
 
-Context diimplementasikan menggunakan `UserData` dan `Metatable` dari `gopher-lua`. Ini berbeda dari pendekatan naif (menyuntikkan ke tabel biasa) karena:
-- Tidak ada konflik field (sebelumnya `Args` di-overwrite oleh fungsi).
-- Metode dipanggil secara proper menggunakan sintaks `:` (colon syntax).
-- Type-safe — Lua akan error jika argument pertama bukan Context yang valid.
+Context is implemented using `gopher-lua`'s `UserData` and `Metatable`. This differs from a naive approach (injecting into a plain table) because:
+- There's no field collision (previously, `Args` could be overwritten by a same-named function).
+- Methods are called properly using `:` (colon) syntax.
+- It's type-safe — Lua errors out if the first argument isn't a valid Context.
 
-### Konfigurasi — `config` package
+> **Note:** `ReplyImage`, `ReplySticker`, and `SendPrivateMessage` are registered in `plugins/loader.go`'s `contextIndex` alongside `Reply`/`React`/`Delete`, following the same `UserData`/Metatable pattern. Unlike those four (which swallow errors — only logged Go-side), these three **return an error string on failure, or `nil` on success**, so plugins can surface upload/send failures to the user directly.
 
-File utama: [`config/config.go`](./config/config.go)
+### Configuration — `config` package
 
-Membaca konfigurasi dari file TOML (`config.toml`). Lihat bagian [Konfigurasi Bot](#konfigurasi-bot) untuk detail format.
+Main file: [`config/config.go`](./config/config.go)
+
+Reads configuration from a TOML file (`config.toml`). See [Bot Configuration](#bot-configuration) for the format.
 
 ---
 
@@ -134,65 +144,65 @@ Membaca konfigurasi dari file TOML (`config.toml`). Lihat bagian [Konfigurasi Bo
 
 ### Context Object (`ctx`)
 
-Setiap handler command Lua menerima satu argumen `ctx` yang berisi semua informasi tentang pesan masuk beserta metode-metode untuk berinteraksi dengan WhatsApp.
+Every Lua command handler receives one `ctx` argument, containing all information about the incoming message plus methods to interact with WhatsApp.
 
 ```lua
 export("mycommand", function(ctx)
-    -- ctx adalah Context object
-    -- akses property: ctx.PropertyName
-    -- panggil method:  ctx:MethodName(args)
+    -- ctx is a Context object
+    -- property access: ctx.PropertyName
+    -- method call:      ctx:MethodName(args)
 end)
 ```
 
 ### Properties
 
-| Property | Tipe | Deskripsi | Contoh Nilai |
+| Property | Type | Description | Example Value |
 |---|---|---|---|
-| `ctx.Message` | `string` | Teks lengkap pesan yang diterima (termasuk prefix dan command) | `".ping"` |
-| `ctx.Sender` | `string` | JID (WhatsApp ID) pengirim pesan | `"6281234567890@s.whatsapp.net"` |
-| `ctx.SenderName` | `string` | Nama profil (PushName) pengirim. Jika tidak ada, fallback ke nomor telepon | `"John Doe"` |
-| `ctx.Chat` | `string` | JID chat tempat pesan diterima (private chat atau grup) | `"120363xxx@g.us"` (grup) atau `"628xxx@s.whatsapp.net"` (private) |
-| `ctx.Args` | `string` | Argumen setelah command. Kosong jika tidak ada argumen | `"hello world"` (dari pesan `.echo hello world`) |
-| `ctx.Prefix` | `string` | Prefix command yang dikonfigurasi di `config.toml` | `"."` |
-| `ctx.IsGroup` | `boolean` | `true` jika pesan berasal dari grup, `false` jika private chat | `true` |
+| `ctx.Message` | `string` | Full text of the incoming message (including prefix and command) | `".ping"` |
+| `ctx.Sender` | `string` | Sender's WhatsApp JID | `"6281234567890@s.whatsapp.net"` |
+| `ctx.SenderName` | `string` | Sender's profile name (PushName); falls back to phone number if unset | `"John Doe"` |
+| `ctx.Chat` | `string` | JID of the chat the message was received in (private or group) | `"120363xxx@g.us"` (group) or `"628xxx@s.whatsapp.net"` (private) |
+| `ctx.Args` | `string` | Everything after the command name; empty if no arguments | `"hello world"` (from `.echo hello world`) |
+| `ctx.Prefix` | `string` | Command prefix configured in `config.toml` | `"."` |
+| `ctx.IsGroup` | `boolean` | `true` if the message came from a group, `false` for private chat | `true` |
 
 ### Methods
 
 #### `ctx:Reply(text)`
 
-Mengirim pesan teks biasa ke chat.
+Sends a plain text message to the chat.
 
 ```lua
 ctx:Reply("Hello, World!")
 ```
 
-| Parameter | Tipe | Wajib | Deskripsi |
+| Parameter | Type | Required | Description |
 |---|---|---|---|
-| `text` | `string` | ✅ | Teks yang akan dikirim |
+| `text` | `string` | ✅ | Text to send |
 
 ---
 
 #### `ctx:ReplyQuote(text)`
 
-Mengirim pesan teks sambil mengutip (quote) pesan asli pengirim. Pesan yang dikutip akan muncul sebagai bubble reply di WhatsApp.
+Sends a text message quoting the sender's original message. The quoted message appears as a reply bubble in WhatsApp.
 
 ```lua
-ctx:ReplyQuote("Ini balasan dengan quote!")
+ctx:ReplyQuote("This is a quoted reply!")
 ```
 
-| Parameter | Tipe | Wajib | Deskripsi |
+| Parameter | Type | Required | Description |
 |---|---|---|---|
-| `text` | `string` | ✅ | Teks yang akan dikirim |
+| `text` | `string` | ✅ | Text to send |
 
-**Kapan menggunakan Reply vs ReplyQuote?**
-- Gunakan `Reply()` untuk pesan informatif umum (misal: menu, bantuan).
-- Gunakan `ReplyQuote()` ketika penting bagi pengguna untuk tahu pesan mana yang dibalas (misal: echo, jawaban pertanyaan spesifik).
+**When to use Reply vs ReplyQuote?**
+- Use `Reply()` for general informative output (e.g. menus, help text).
+- Use `ReplyQuote()` when it matters which message is being answered (e.g. echo, direct answers to a specific question).
 
 ---
 
 #### `ctx:React(emoji)`
 
-Menambahkan reaksi emoji pada pesan command pengirim. Emoji muncul di bawah bubble chat pengirim.
+Adds an emoji reaction to the sender's command message. The emoji appears under the sender's chat bubble.
 
 ```lua
 ctx:React("👍")
@@ -200,78 +210,126 @@ ctx:React("✅")
 ctx:React("❌")
 ```
 
-| Parameter | Tipe | Wajib | Deskripsi |
+| Parameter | Type | Required | Description |
 |---|---|---|---|
-| `emoji` | `string` | ✅ | Karakter emoji tunggal |
+| `emoji` | `string` | ✅ | A single emoji character |
 
-> **Tips:** Gunakan reaksi sebagai feedback visual cepat sebelum mengirim balasan. Misalnya, `ctx:React("⏳")` saat memproses, lalu kirim hasil.
+> **Tip:** use a reaction as quick visual feedback before sending a reply — e.g. `ctx:React("⏳")` while processing, then send the result.
 
 ---
 
 #### `ctx:DeleteMessage()`
 
-Menghapus/menarik kembali (*revoke*) pesan command yang dikirim oleh pengguna. Berguna untuk command yang mengandung informasi sensitif.
+Deletes/revokes the sender's command message. Useful for commands carrying sensitive information.
 
 ```lua
 ctx:DeleteMessage()
 ```
 
-> **Catatan:** Bot hanya dapat menghapus pesan di grup jika bot adalah admin grup. Di private chat, bot hanya dapat menghapus pesan miliknya sendiri.
+> **Note:** the bot can only delete other people's messages in a group if it's a group admin. In private chats it can only delete its own messages.
 
 ---
 
-## Fitur Built-in
+#### `ctx:ReplyImage(path, caption)`
+
+Uploads a local image file and sends it to the **current chat**, with an optional caption.
+
+```lua
+ctx:ReplyImage("/path/to/image.jpg", "Look at this!")
+```
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `path` | `string` | ✅ | Filesystem path to the image, readable by the bot process |
+| `caption` | `string` | ➖ | Optional caption; pass `""` for none |
+
+> Under the hood this reads the file, uploads it via `whatsmeow`'s `client.Upload(..., whatsmeow.MediaImage)`, detects the MIME type, and sends a `waE2E.ImageMessage`.
+
+---
+
+#### `ctx:ReplySticker(path)`
+
+Uploads a local `.webp` file and sends it as a sticker to the **current chat**.
+
+```lua
+ctx:ReplySticker("/path/to/sticker.webp")
+```
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `path` | `string` | ✅ | Filesystem path to a valid `.webp` sticker file |
+
+---
+
+#### `ctx:SendPrivateMessage(target, text)`
+
+Sends a plain text message to an **arbitrary user**, independent of the chat the command was invoked in.
+
+```lua
+ctx:SendPrivateMessage("628123456789", "Hello from the bot!")
+```
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `target` | `string` | ✅ | Bare phone number (auto-suffixed with `@s.whatsapp.net`) or a full JID |
+| `text` | `string` | ✅ | Message text to send |
+
+> **Security note:** any user able to message the bot could otherwise abuse this to spam or contact arbitrary third parties. Gate plugin commands that wrap this behind an owner/allowlist check on `ctx.Sender` — see [Owner-Gated Private Messaging](#example-owner-gated-private-messaging) below.
+
+---
+
+## Built-in Features
 
 ### Auto-Reconnect
 
-Ketika koneksi WebSocket ke WhatsApp terputus (misalnya karena masalah jaringan), bot secara otomatis mencoba menyambung ulang menggunakan **exponential backoff**:
+When the WebSocket connection to WhatsApp drops (e.g. due to network issues), the bot automatically retries using **exponential backoff**:
 
-| Percobaan | Delay |
+| Attempt | Delay |
 |---|---|
-| 1 | 2 detik |
-| 2 | 4 detik |
-| 3 | 8 detik |
-| 4 | 16 detik |
-| 5 | 32 detik |
+| 1 | 2 seconds |
+| 2 | 4 seconds |
+| 3 | 8 seconds |
+| 4 | 16 seconds |
+| 5 | 32 seconds |
 
-Jika setelah 5 percobaan masih gagal, bot akan berhenti mencoba dan menampilkan log bahwa restart manual diperlukan.
+If all 5 attempts fail, the bot stops retrying and logs that a manual restart is required.
 
-### Auto-Reject Panggilan
+### Auto-Reject Calls
 
-Semua panggilan masuk (suara dan video) secara otomatis ditolak. Ini mencegah bot dari *hang* atau terinterupsi oleh spam panggilan.
+All incoming calls (voice and video) are automatically rejected, preventing the bot from hanging or being interrupted by call spam.
 
-### Ignore Self Message
+### Ignore Self Messages
 
-Bot mengabaikan pesan yang dikirim oleh dirinya sendiri, sehingga tidak terjadi *infinite loop* saat bot mengirim balasan.
+The bot ignores messages sent by itself, avoiding infinite loops when it sends replies.
 
 ---
 
-## Panduan Membuat Plugin
+## Writing a Plugin
 
-### Struktur Dasar Plugin
+### Basic Plugin Structure
 
-Setiap plugin adalah file `.lua` yang disimpan di dalam direktori `plugins/`. Semua file `.lua` dimuat otomatis saat bot pertama kali dijalankan.
+Every plugin is a `.lua` file stored inside the `plugins/` directory. All `.lua` files are loaded automatically when the bot starts.
 
 ```
 plugins/
-├── Menu.lua          # Menu dan command bawaan
-├── Greetings.lua     # Plugin sapaan
+├── Menu.lua          # Built-in menu and commands
+├── Greetings.lua     # Greeting plugin
 ├── Utils.lua         # Utility commands
-└── YourPlugin.lua    # Plugin custom Anda
+└── YourPlugin.lua    # Your custom plugin
 ```
 
-Gunakan fungsi global `export(name, handler)` untuk mendaftarkan command:
+Use the global `export(name, handler)` function to register a command:
 
 ```lua
-export("namacommand", function(ctx)
-    -- logika command di sini
+export("commandname", function(ctx)
+    -- command logic here
 end)
 ```
 
-- `name` (string): Nama command (tanpa prefix). Pengguna akan mengetik `{prefix}{name}` untuk memanggil command ini.
-- `handler` (function): Fungsi yang menerima satu argumen `ctx` (Context).
+- `name` (string): command name (without prefix). Users type `{prefix}{name}` to invoke it.
+- `handler` (function): receives one `ctx` (Context) argument.
 
-### Contoh: Command Sederhana
+### Example: Simple Command
 
 ```lua
 -- plugins/Hello.lua
@@ -281,10 +339,10 @@ export("hello", function(ctx)
 end)
 ```
 
-**Penggunaan:** `.hello`
-**Output:** Bot mereaksi dengan 👋 dan membalas "Hello, World! 🌍"
+**Usage:** `.hello`
+**Output:** the bot reacts with 👋 and replies "Hello, World! 🌍"
 
-### Contoh: Command dengan Argumen
+### Example: Command with Arguments
 
 ```lua
 -- plugins/Repeat.lua
@@ -292,7 +350,7 @@ export("repeat", function(ctx)
     local text = ctx.Args
     if text == "" then
         ctx:React("❓")
-        ctx:ReplyQuote("Usage: " .. ctx.Prefix .. "repeat <teks yang ingin diulang>")
+        ctx:ReplyQuote("Usage: " .. ctx.Prefix .. "repeat <text to repeat>")
         return
     end
 
@@ -301,10 +359,10 @@ export("repeat", function(ctx)
 end)
 ```
 
-**Penggunaan:** `.repeat halo`
-**Output:** Bot mereaksi dengan 🔁 dan mengutip pesan sambil membalas teks diulang 3 kali.
+**Usage:** `.repeat hello`
+**Output:** the bot reacts with 🔁 and quotes the message while replying with the text repeated 3 times.
 
-### Contoh: Greeting Personal
+### Example: Personal Greeting
 
 ```lua
 -- plugins/Greet.lua
@@ -312,59 +370,59 @@ export("greet", function(ctx)
     local name = ctx.SenderName
     ctx:React("🤝")
 
-    local msg = "Halo, *" .. name .. "*! 👋\n\n"
-    msg = msg .. "Selamat datang di Whatskel Bot.\n"
-    msg = msg .. "Ketik " .. ctx.Prefix .. "menu untuk melihat daftar perintah."
+    local msg = "Hello, *" .. name .. "*! 👋\n\n"
+    msg = msg .. "Welcome to Whatskel Bot.\n"
+    msg = msg .. "Type " .. ctx.Prefix .. "menu to see the list of commands."
 
     ctx:ReplyQuote(msg)
 end)
 ```
 
-**Penggunaan:** `.greet`
-**Output:** "Halo, *John Doe*! 👋" — menggunakan `ctx.SenderName` untuk personalisasi.
+**Usage:** `.greet`
+**Output:** "Hello, *John Doe*! 👋" — using `ctx.SenderName` for personalization.
 
-### Contoh: Group-Only Command
+### Example: Group-Only Command
 
 ```lua
 -- plugins/GroupInfo.lua
 export("groupinfo", function(ctx)
     if not ctx.IsGroup then
         ctx:React("🚫")
-        ctx:ReplyQuote("Command ini hanya bisa digunakan di dalam grup!")
+        ctx:ReplyQuote("This command can only be used inside a group!")
         return
     end
 
     ctx:React("📊")
-    local msg = "📊 *Info Grup*\n\n"
+    local msg = "📊 *Group Info*\n\n"
     msg = msg .. "Chat ID: " .. ctx.Chat .. "\n"
-    msg = msg .. "Pengirim: " .. ctx.SenderName
+    msg = msg .. "Sender: " .. ctx.SenderName
 
     ctx:Reply(msg)
 end)
 ```
 
-**Penggunaan:** `.groupinfo`
-**Output:** Menampilkan info grup, atau menolak jika digunakan di private chat.
+**Usage:** `.groupinfo`
+**Output:** shows group info, or refuses if used in a private chat.
 
-### Contoh: Self-Destructing Command
+### Example: Self-Destructing Command
 
 ```lua
 -- plugins/Secret.lua
 export("secret", function(ctx)
-    -- Hapus command pengguna agar tidak terlihat orang lain
+    -- Delete the user's command so no one else sees it
     ctx:DeleteMessage()
 
-    -- Kirim pesan rahasia
-    ctx:Reply("🤫 Pesan rahasia diterima! Command kamu sudah dihapus.")
+    -- Send the secret reply
+    ctx:Reply("🤫 Secret message received! Your command has been deleted.")
 end)
 ```
 
-**Penggunaan:** `.secret`
-**Output:** Pesan `.secret` dihapus dari chat, lalu bot membalas konfirmasi.
+**Usage:** `.secret`
+**Output:** the `.secret` message is deleted from the chat, then the bot replies with a confirmation.
 
-### Contoh: Multi-Command dalam Satu File
+### Example: Multiple Commands in One File
 
-Anda bisa mendaftarkan beberapa command dalam satu file `.lua`:
+You can register several commands in a single `.lua` file:
 
 ```lua
 -- plugins/Fun.lua
@@ -380,55 +438,133 @@ export("dice", function(ctx)
     ctx:React("🎲")
     math.randomseed(os.time())
     local result = math.random(1, 6)
-    ctx:ReplyQuote("🎲 Kamu mendapat angka: *" .. result .. "*")
+    ctx:ReplyQuote("🎲 You rolled: *" .. result .. "*")
+end)
+```
+
+### Example: Sending Media (Image/Sticker)
+
+```lua
+-- plugins/Media.lua
+export("gambar", function(ctx)
+    -- Usage: .gambar <path> | <caption>
+    local path, caption = ctx.Args:match("^(.-)%s*|%s*(.*)$")
+    if not path then path, caption = ctx.Args, "" end
+
+    if path == "" then
+        ctx:React("❓")
+        ctx:ReplyQuote("Usage: " .. ctx.Prefix .. "gambar <path> | <optional caption>")
+        return
+    end
+
+    ctx:React("🖼️")
+    local err = ctx:ReplyImage(path, caption)
+    if err then
+        ctx:ReplyQuote("Failed to send image: " .. err)
+    end
+end)
+
+export("stiker", function(ctx)
+    -- Usage: .stiker <path to a .webp file>
+    local path = ctx.Args
+    if path == "" then
+        ctx:React("❓")
+        ctx:ReplyQuote("Usage: " .. ctx.Prefix .. "stiker <path to .webp>")
+        return
+    end
+
+    ctx:React("🏷️")
+    local err = ctx:ReplySticker(path)
+    if err then
+        ctx:ReplyQuote("Failed to send sticker: " .. err)
+    end
+end)
+```
+
+**Usage:** `.gambar /home/bot/photo.jpg | Nice view` or `.stiker /home/bot/stickers/wave.webp`
+
+### Example: Owner-Gated Private Messaging
+
+Because `ctx:SendPrivateMessage` can message *any* number, restrict it to the bot owner to prevent abuse:
+
+```lua
+-- plugins/Admin.lua
+export("pm", function(ctx)
+    local OWNER_JID = "REPLACE_WITH_YOUR_JID@s.whatsapp.net"
+    if ctx.Sender ~= OWNER_JID then
+        ctx:React("🚫")
+        ctx:ReplyQuote("This command is owner-only.")
+        return
+    end
+
+    -- Usage: .pm <number> <message>
+    local nomor, pesan = ctx.Args:match("^(%S+)%s+(.+)$")
+    if not nomor or not pesan then
+        ctx:React("❓")
+        ctx:ReplyQuote("Usage: " .. ctx.Prefix .. "pm <number> <message>\nExample: " .. ctx.Prefix .. "pm 628123456789 Hi!")
+        return
+    end
+
+    ctx:React("📩")
+    local err = ctx:SendPrivateMessage(nomor, pesan)
+    if err then
+        ctx:ReplyQuote("Failed to send: " .. err)
+        return
+    end
+    ctx:ReplyQuote("✅ Message sent to " .. nomor .. ".")
 end)
 ```
 
 ---
 
-## Konfigurasi Bot
+## Bot Configuration
 
-Konfigurasi bot dibaca dari file `config.toml`:
+Bot configuration is read from `config.toml`:
 
 ```toml
 [bot]
-prefix = "."                        # Prefix yang digunakan untuk trigger command
-session_path = "whatsapp-session.db" # Path file session WhatsApp
-db_path = "whatsapp-store.db"        # Path file database SQLite
+prefix = "."                        # Command trigger prefix
+session_path = "whatsapp-session.db" # WhatsApp session file path
+db_path = "whatsapp-store.db"        # SQLite database path
 
 [plugins]
-directory = "plugins"                # Direktori tempat file .lua disimpan
+directory = "plugins"                # Directory holding .lua files
 ```
 
-| Key | Default | Deskripsi |
+| Key | Default | Description |
 |---|---|---|
-| `bot.prefix` | `"."` | Karakter atau string yang harus diketik sebelum nama command |
-| `bot.session_path` | `"whatsapp-session.db"` | Lokasi penyimpanan session WhatsApp |
-| `bot.db_path` | `"whatsapp-store.db"` | Lokasi database utama (device store) |
-| `plugins.directory` | `"plugins"` | Direktori yang berisi file-file plugin `.lua` |
+| `bot.prefix` | `"."` | Character or string required before a command name |
+| `bot.session_path` | `"whatsapp-session.db"` | WhatsApp session storage location |
+| `bot.db_path` | `"whatsapp-store.db"` | Main database (device store) location |
+| `plugins.directory` | `"plugins"` | Directory containing `.lua` plugin files |
 
 ---
 
 ## FAQ & Troubleshooting
 
-### Bot tidak merespon command saya
-- Pastikan Anda menggunakan prefix yang benar (lihat `config.toml`).
-- Pastikan nama command sesuai dengan yang di-`export()` di file `.lua`.
-- Cek log terminal untuk error "Error loading plugin" atau "Error executing command".
+### The bot doesn't respond to my command
+- Make sure you're using the correct prefix (check `config.toml`).
+- Make sure the command name matches what was passed to `export()` in the `.lua` file.
+- Check the terminal log for "Error loading plugin" or "Error executing command".
 
-### QR Code tidak muncul
-- Pastikan `db_path` dapat ditulis oleh bot.
-- Hapus file database lama jika Anda ingin melakukan login ulang: `make clean`.
+### The QR code doesn't show up
+- Make sure `db_path` is writable by the bot.
+- Delete old database files if you want to log in again: `make clean`.
 
-### Plugin tidak dimuat
-- Pastikan file plugin memiliki ekstensi `.lua`.
-- Pastikan file berada di dalam direktori yang dikonfigurasi pada `plugins.directory`.
-- Periksa syntax Lua — error syntax akan ditampilkan di log terminal.
+### The plugin doesn't load
+- Make sure the plugin file has a `.lua` extension.
+- Make sure the file is inside the directory configured in `plugins.directory`.
+- Check for Lua syntax errors — they'll show up in the terminal log.
 
-### Bot disconnect terus-menerus
-- Bot sudah memiliki fitur auto-reconnect dengan exponential backoff (sampai 5 percobaan).
-- Jika tetap gagal, cek koneksi internet Anda.
-- Pastikan hanya satu instance bot yang berjalan (dua instance dengan session yang sama akan saling kick).
+### The bot keeps disconnecting
+- The bot already has auto-reconnect with exponential backoff (up to 5 attempts).
+- If it still fails, check your internet connection.
+- Make sure only one bot instance is running per session (two instances sharing the same session will kick each other).
 
-### Bagaimana cara menambahkan command baru tanpa restart?
-- Saat ini, plugin dimuat sekali saat startup. Anda perlu me-restart bot setelah menambahkan atau mengubah file `.lua`.
+### Media (image/sticker) commands fail with an error
+- Make sure the file path passed to `ctx:ReplyImage`/`ctx:ReplySticker` is readable by the process the bot runs as (not just readable by you).
+- Stickers must be valid `.webp` files — other formats will upload but may not render as stickers on WhatsApp.
+- If the returned error string mentions upload failures, double check network access to WhatsApp's media servers and that the file isn't corrupted/empty.
+
+### How do I add a new command without restarting?
+- Currently not supported — plugins are loaded once at startup. Restart the bot after adding or editing `.lua` files.

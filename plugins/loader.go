@@ -10,17 +10,20 @@ import (
 )
 
 type Context struct {
-	Message    string
-	Sender     string
-	SenderName string
-	IsGroup    bool
-	Chat       string
-	Args       string
-	Prefix     string
-	Reply      func(text string) error
-	ReplyQuote func(text string) error
-	React      func(emoji string) error
-	Delete     func() error
+	Message            string
+	Sender             string
+	SenderName         string
+	IsGroup            bool
+	Chat               string
+	Args               string
+	Prefix             string
+	Reply              func(text string) error
+	ReplyQuote         func(text string) error
+	React              func(emoji string) error
+	Delete             func() error
+	ReplyImage         func(path, caption string) error
+	ReplySticker       func(path string) error
+	SendPrivateMessage func(target, text string) error
 }
 
 type Loader struct {
@@ -72,6 +75,12 @@ func contextIndex(L *lua.LState) int {
 		L.Push(L.NewFunction(contextReact))
 	case "DeleteMessage":
 		L.Push(L.NewFunction(contextDelete))
+	case "ReplyImage":
+		L.Push(L.NewFunction(contextReplyImage))
+	case "ReplySticker":
+		L.Push(L.NewFunction(contextReplySticker))
+	case "SendPrivateMessage":
+		L.Push(L.NewFunction(contextSendPrivateMessage))
 	default:
 		L.Push(lua.LNil)
 	}
@@ -117,6 +126,63 @@ func contextDelete(L *lua.LState) int {
 		if err := ctx.Delete(); err != nil {
 			log.Printf("DeleteMessage error: %v", err)
 		}
+	}
+	return 0
+}
+
+// contextReplyImage implements ctx:ReplyImage(path, caption).
+// caption is optional — omitting it (or passing "") sends no caption.
+func contextReplyImage(L *lua.LState) int {
+	ctx := checkContext(L)
+	path := L.CheckString(2)
+	caption := L.OptString(3, "")
+
+	if ctx.ReplyImage == nil {
+		L.Push(lua.LString("ReplyImage not available"))
+		return 1
+	}
+
+	if err := ctx.ReplyImage(path, caption); err != nil {
+		log.Printf("ReplyImage error: %v", err)
+		L.Push(lua.LString(err.Error()))
+		return 1
+	}
+	return 0
+}
+
+// contextReplySticker implements ctx:ReplySticker(path).
+func contextReplySticker(L *lua.LState) int {
+	ctx := checkContext(L)
+	path := L.CheckString(2)
+
+	if ctx.ReplySticker == nil {
+		L.Push(lua.LString("ReplySticker not available"))
+		return 1
+	}
+
+	if err := ctx.ReplySticker(path); err != nil {
+		log.Printf("ReplySticker error: %v", err)
+		L.Push(lua.LString(err.Error()))
+		return 1
+	}
+	return 0
+}
+
+// contextSendPrivateMessage implements ctx:SendPrivateMessage(target, text).
+func contextSendPrivateMessage(L *lua.LState) int {
+	ctx := checkContext(L)
+	target := L.CheckString(2)
+	text := L.CheckString(3)
+
+	if ctx.SendPrivateMessage == nil {
+		L.Push(lua.LString("SendPrivateMessage not available"))
+		return 1
+	}
+
+	if err := ctx.SendPrivateMessage(target, text); err != nil {
+		log.Printf("SendPrivateMessage error: %v", err)
+		L.Push(lua.LString(err.Error()))
+		return 1
 	}
 	return 0
 }
