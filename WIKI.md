@@ -64,9 +64,12 @@ Whatskel is built on a modular architecture separating the **Go core** (WhatsApp
 │  ┌──────────────────────────────────────────┐           │
 │  │ Context Builder                          │           │
 │  │ Message, Sender, SenderName, Chat, Args, │           │
-│  │ Prefix, IsGroup, Reply, ReplyQuote,      │           │
-│  │ React, DeleteMessage, ReplyImage,        │           │
-│  │ ReplySticker, SendPrivateMessage         │           │
+│  │ Prefix, IsGroup, HasMedia, MediaType,     │           │
+│  │ HasQuotedMedia, QuotedMediaType,          │           │
+│  │ Reply, ReplyQuote, React, DeleteMessage,  │           │
+│  │ ReplyImage, ReplySticker,                │           │
+│  │ SendPrivateMessage, DownloadMedia,        │           │
+│  │ DownloadQuotedMedia                       │           │
 │  └──────┬───────────────────────────────────┘           │
 └─────────┼───────────────────────────────────────────────┘
           │
@@ -108,6 +111,14 @@ Two upload/send helpers back the media API exposed to Lua:
 - **`uploadAndSendImage(targetJID, path, caption)`** — reads a local file, uploads it via `client.Upload(ctx, data, whatsmeow.MediaImage)`, detects its MIME type, and sends a `waE2E.ImageMessage`.
 - **`uploadAndSendSticker(targetJID, path)`** — same upload flow, sends a `waE2E.StickerMessage` (expects a valid `.webp`).
 - **`parseTargetJID(raw)`** — normalizes a bare phone number (e.g. `"628123456789"`) into a full JID by appending `@s.whatsapp.net` when no `@` is present, otherwise parses the string as-is via `types.ParseJID`.
+
+Media detection and download helpers:
+- **`getMediaType(msg)`** — returns the media type string (`"image"`, `"video"`, `"audio"`, `"document"`, `"sticker"`, or `""`).
+- **`hasMedia(msg)`** — returns `true` if the message contains any downloadable media.
+- **`getQuotedMessage(msg)`** — extracts the `QuotedMessage` from `ContextInfo` across `ExtendedTextMessage`, `ImageMessage`, and `VideoMessage`.
+- **`getMediaExtension(mediaType)`** — maps a media type to a file extension (`.jpg`, `.mp4`, `.ogg`, `.webp`, `.bin`).
+
+> **Caption-based command detection:** Commands can be triggered via image/video/document captions. If a user sends an image with the caption `.sticker`, the bot extracts the caption, parses the command, and the image is accessible via `ctx:DownloadMedia()`.
 
 ### Lua Loader — `plugins` package
 
@@ -566,6 +577,68 @@ export("pm", function(ctx)
 end)
 ```
 
+### Example: Downloading and Re-sending Media
+
+Download an image (or quoted media) and re-send it as a sticker, or vice versa:
+
+```lua
+-- plugins/MediaTools.lua
+
+-- Save media: reply to an image/video/sticker with .save
+export("save", function(ctx)
+    local path, err
+
+    if ctx.HasMedia then
+        path, err = ctx:DownloadMedia()
+    elseif ctx.HasQuotedMedia then
+        path, err = ctx:DownloadQuotedMedia()
+    else
+        ctx:React("❌")
+        ctx:ReplyQuote("No media found! Send or reply to a media file.")
+        return
+    end
+
+    if err then
+        ctx:React("❌")
+        ctx:ReplyQuote("Download failed: " .. err)
+        return
+    end
+
+    local mediaType = ctx.HasMedia and ctx.MediaType or ctx.QuotedMediaType
+    ctx:React("✅")
+    ctx:ReplyQuote("✅ Media (" .. mediaType .. ") saved to:\n" .. path)
+end)
+
+-- Convert image to sticker: send/reply to an image with .tosticker
+export("tosticker", function(ctx)
+    local path, err
+
+    if ctx.HasMedia and ctx.MediaType == "image" then
+        path, err = ctx:DownloadMedia()
+    elseif ctx.HasQuotedMedia and ctx.QuotedMediaType == "image" then
+        path, err = ctx:DownloadQuotedMedia()
+    else
+        ctx:React("❌")
+        ctx:ReplyQuote("Reply to or send an image with this command.")
+        return
+    end
+
+    if err then
+        ctx:React("❌")
+        ctx:ReplyQuote("Download failed: " .. err)
+        return
+    end
+
+    ctx:React("🏷️")
+    local sendErr = ctx:ReplySticker(path)
+    if sendErr then
+        ctx:ReplyQuote("Failed to send sticker: " .. sendErr)
+    end
+end)
+```
+
+**Usage:** `.save` (reply to any media) or `.tosticker` (reply to/send an image with caption)
+
 ---
 
 ## Bot Configuration
@@ -619,3 +692,11 @@ directory = "plugins"                # Directory holding .lua files
 
 ### How do I add a new command without restarting?
 - Currently not supported — plugins are loaded once at startup. Restart the bot after adding or editing `.lua` files.
+
+### How do I trigger a command with an image caption?
+- Send an image with a caption like `.sticker` or `.save`. The bot extracts the caption as the command text, and the image is accessible via `ctx:DownloadMedia()` inside the Lua handler.
+
+### Media download returns an error
+- Make sure the media hasn't expired — WhatsApp media URLs expire after some time.
+- Check `ctx.HasMedia` or `ctx.HasQuotedMedia` before calling the download method.
+- Network issues can also cause download failures. The error message will contain details.

@@ -26,6 +26,11 @@ Whatskel is a WhatsApp bot framework that separates its **core** (Go) from its *
 | 🗑️ **Delete Messages** | Revoke/delete command messages programmatically |
 | 👤 **Sender Name Access** | Access sender's display name for personalized responses |
 | 🏘️ **Group Detection** | Distinguish between group and private messages |
+| 🖼️ **Send Image/Sticker** | Upload and send images or `.webp` stickers |
+| 📩 **Private Messaging** | Send messages to arbitrary users by phone number |
+| 📥 **Media Download Bridge** | Download encrypted media (image/video/audio/sticker/document) from messages |
+| 🔁 **Quoted Media Download** | Download media from quoted/replied-to messages |
+| 📝 **Caption Commands** | Trigger commands via image/video/document captions |
 | 💾 **SQLite Persistence** | Session and device data stored locally |
 
 ## 📖 Documentation
@@ -33,6 +38,10 @@ Whatskel is a WhatsApp bot framework that separates its **core** (Go) from its *
 > **📚 [Read the full Wiki →](./WIKI.md)**
 >
 > The Wiki contains the complete **API reference**, **architecture guide**, **plugin creation tutorial** with examples, **configuration details**, and **troubleshooting FAQ**.
+>
+> **🧠 [Skills Reference →](./SKILLS.md)**
+>
+> A quick cheat-sheet of every `ctx` property and method with one-liner descriptions.
 
 ## 🚀 Quick Start
 
@@ -100,11 +109,15 @@ That's it! The bot loads all `.lua` files automatically on startup.
 | `ctx.Sender` | `ctx:ReplyQuote(text)` |
 | `ctx.SenderName` | `ctx:React(emoji)` |
 | `ctx.Chat` | `ctx:DeleteMessage()` |
-| `ctx.Args` | |
-| `ctx.Prefix` | |
-| `ctx.IsGroup` | |
+| `ctx.Args` | `ctx:ReplyImage(path, caption)` |
+| `ctx.Prefix` | `ctx:ReplySticker(path)` |
+| `ctx.IsGroup` | `ctx:SendPrivateMessage(target, text)` |
+| `ctx.HasMedia` | `ctx:DownloadMedia()` |
+| `ctx.HasQuotedMedia` | `ctx:DownloadQuotedMedia()` |
+| `ctx.MediaType` | |
+| `ctx.QuotedMediaType` | |
 
-> See the **[Wiki](./WIKI.md)** for the full API reference and more plugin examples.
+> See the **[Wiki](./WIKI.md)** for the full API reference and the **[Skills](./SKILLS.md)** for a quick cheat-sheet.
 
 ## 📁 Project Structure
 
@@ -115,11 +128,12 @@ Whatskel/
 │   └── bot.go           # WhatsApp client, event handling, context building
 ├── plugins/
 │   ├── loader.go        # Lua VM, UserData metatables, command dispatch
-│   └── Menu.lua         # Default commands (menu, ping, echo)
+│   └── Menu.lua         # Default commands (menu, ping, echo, greet, info)
 ├── config/
 │   └── config.go        # TOML config parser
 ├── config.toml          # Bot configuration
-├── WIKI.md              # Full API documentation
+├── WIKI.md              # Full API documentation & architecture guide
+├── SKILLS.md            # Quick API cheat-sheet
 ├── LICENSE              # GPLv3
 └── .github/
     └── workflows/
