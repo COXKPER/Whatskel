@@ -10,20 +10,26 @@ import (
 )
 
 type Context struct {
-	Message            string
-	Sender             string
-	SenderName         string
-	IsGroup            bool
-	Chat               string
-	Args               string
-	Prefix             string
-	Reply              func(text string) error
-	ReplyQuote         func(text string) error
-	React              func(emoji string) error
-	Delete             func() error
-	ReplyImage         func(path, caption string) error
-	ReplySticker       func(path string) error
-	SendPrivateMessage func(target, text string) error
+	Message             string
+	Sender              string
+	SenderName          string
+	IsGroup             bool
+	Chat                string
+	Args                string
+	Prefix              string
+	Reply               func(text string) error
+	ReplyQuote          func(text string) error
+	React               func(emoji string) error
+	Delete              func() error
+	ReplyImage          func(path, caption string) error
+	ReplySticker        func(path string) error
+	SendPrivateMessage  func(target, text string) error
+	HasMedia            bool
+	HasQuotedMedia      bool
+	MediaType           string
+	QuotedMediaType     string
+	DownloadMedia       func() (string, error)
+	DownloadQuotedMedia func() (string, error)
 }
 
 type Loader struct {
@@ -81,6 +87,18 @@ func contextIndex(L *lua.LState) int {
 		L.Push(L.NewFunction(contextReplySticker))
 	case "SendPrivateMessage":
 		L.Push(L.NewFunction(contextSendPrivateMessage))
+	case "HasMedia":
+		L.Push(lua.LBool(ctx.HasMedia))
+	case "HasQuotedMedia":
+		L.Push(lua.LBool(ctx.HasQuotedMedia))
+	case "MediaType":
+		L.Push(lua.LString(ctx.MediaType))
+	case "QuotedMediaType":
+		L.Push(lua.LString(ctx.QuotedMediaType))
+	case "DownloadMedia":
+		L.Push(L.NewFunction(contextDownloadMedia))
+	case "DownloadQuotedMedia":
+		L.Push(L.NewFunction(contextDownloadQuotedMedia))
 	default:
 		L.Push(lua.LNil)
 	}
@@ -185,6 +203,48 @@ func contextSendPrivateMessage(L *lua.LState) int {
 		return 1
 	}
 	return 0
+}
+
+// contextDownloadMedia implements ctx:DownloadMedia().
+// Returns (filepath, nil) on success, or (nil, error_string) on failure.
+func contextDownloadMedia(L *lua.LState) int {
+	ctx := checkContext(L)
+	if ctx.DownloadMedia == nil {
+		L.Push(lua.LNil)
+		L.Push(lua.LString("DownloadMedia not available"))
+		return 2
+	}
+	path, err := ctx.DownloadMedia()
+	if err != nil {
+		log.Printf("DownloadMedia error: %v", err)
+		L.Push(lua.LNil)
+		L.Push(lua.LString(err.Error()))
+		return 2
+	}
+	L.Push(lua.LString(path))
+	L.Push(lua.LNil)
+	return 2
+}
+
+// contextDownloadQuotedMedia implements ctx:DownloadQuotedMedia().
+// Returns (filepath, nil) on success, or (nil, error_string) on failure.
+func contextDownloadQuotedMedia(L *lua.LState) int {
+	ctx := checkContext(L)
+	if ctx.DownloadQuotedMedia == nil {
+		L.Push(lua.LNil)
+		L.Push(lua.LString("DownloadQuotedMedia not available"))
+		return 2
+	}
+	path, err := ctx.DownloadQuotedMedia()
+	if err != nil {
+		log.Printf("DownloadQuotedMedia error: %v", err)
+		L.Push(lua.LNil)
+		L.Push(lua.LString(err.Error()))
+		return 2
+	}
+	L.Push(lua.LString(path))
+	L.Push(lua.LNil)
+	return 2
 }
 
 func NewLoader(dir string) *Loader {

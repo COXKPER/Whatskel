@@ -165,6 +165,10 @@ end)
 | `ctx.Args` | `string` | Everything after the command name; empty if no arguments | `"hello world"` (from `.echo hello world`) |
 | `ctx.Prefix` | `string` | Command prefix configured in `config.toml` | `"."` |
 | `ctx.IsGroup` | `boolean` | `true` if the message came from a group, `false` for private chat | `true` |
+| `ctx.HasMedia` | `boolean` | `true` if the current message contains downloadable media (image/video/audio/document/sticker) | `true` |
+| `ctx.HasQuotedMedia` | `boolean` | `true` if the quoted (replied-to) message contains downloadable media | `false` |
+| `ctx.MediaType` | `string` | Type of media on the message: `"image"`, `"video"`, `"audio"`, `"document"`, `"sticker"`, or `""` | `"image"` |
+| `ctx.QuotedMediaType` | `string` | Type of media on the quoted message (same possible values as `MediaType`) | `"sticker"` |
 
 ### Methods
 
@@ -275,6 +279,53 @@ ctx:SendPrivateMessage("628123456789", "Hello from the bot!")
 | `text` | `string` | ✅ | Message text to send |
 
 > **Security note:** any user able to message the bot could otherwise abuse this to spam or contact arbitrary third parties. Gate plugin commands that wrap this behind an owner/allowlist check on `ctx.Sender` — see [Owner-Gated Private Messaging](#example-owner-gated-private-messaging) below.
+
+---
+
+#### `ctx:DownloadMedia()`
+
+Downloads the media attached to the **current message** (e.g. when a user sends an image with a command as its caption). Saves the decrypted file to a temp directory and returns the absolute file path.
+
+```lua
+local path, err = ctx:DownloadMedia()
+if err then
+    ctx:ReplyQuote("Failed to download: " .. err)
+    return
+end
+-- path is now something like "/tmp/whatskel-media-123456.jpg"
+ctx:ReplyQuote("Media downloaded to: " .. path)
+```
+
+| Returns | Type | Description |
+|---|---|---|
+| `path` | `string` or `nil` | Absolute path to the downloaded temp file, or `nil` on error |
+| `err` | `string` or `nil` | Error message, or `nil` on success |
+
+> **How it works:** WhatsApp media is end-to-end encrypted. The Go core uses `whatsmeow`'s `client.DownloadAny()` to decrypt and download the media bytes, then writes them to a temp file with the appropriate extension (`.jpg`, `.mp4`, `.ogg`, `.webp`, `.bin`).
+
+> **Tip:** Always check `ctx.HasMedia` before calling `ctx:DownloadMedia()` to avoid unnecessary error handling.
+
+---
+
+#### `ctx:DownloadQuotedMedia()`
+
+Downloads the media from the **quoted (replied-to) message**. This allows a user to reply to an image/video/sticker with a command, and the bot downloads that quoted media.
+
+```lua
+local path, err = ctx:DownloadQuotedMedia()
+if err then
+    ctx:ReplyQuote("Failed to download quoted media: " .. err)
+    return
+end
+ctx:ReplyQuote("Quoted media saved to: " .. path)
+```
+
+| Returns | Type | Description |
+|---|---|---|
+| `path` | `string` or `nil` | Absolute path to the downloaded temp file, or `nil` on error |
+| `err` | `string` or `nil` | Error message, or `nil` on success |
+
+> **Tip:** Always check `ctx.HasQuotedMedia` before calling. You can also use `ctx.QuotedMediaType` to know what kind of media it is (`"image"`, `"sticker"`, etc.) before deciding what to do with it.
 
 ---
 

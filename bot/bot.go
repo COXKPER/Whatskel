@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -208,6 +209,77 @@ func (b *Bot) uploadAndSendSticker(targetJID types.JID, path string) error {
 	return err
 }
 
+// getMediaType returns a human-readable media type string for a message.
+// Returns empty string if the message contains no downloadable media.
+func getMediaType(msg *waE2E.Message) string {
+	if msg == nil {
+		return ""
+	}
+	switch {
+	case msg.ImageMessage != nil:
+		return "image"
+	case msg.VideoMessage != nil:
+		return "video"
+	case msg.AudioMessage != nil:
+		return "audio"
+	case msg.DocumentMessage != nil:
+		return "document"
+	case msg.StickerMessage != nil:
+		return "sticker"
+	default:
+		return ""
+	}
+}
+
+// hasMedia checks whether the message itself contains downloadable media.
+func hasMedia(msg *waE2E.Message) bool {
+	return getMediaType(msg) != ""
+}
+
+// getQuotedMessage extracts the quoted message from different message types.
+func getQuotedMessage(msg *waE2E.Message) *waE2E.Message {
+	if msg == nil {
+		return nil
+	}
+	// ExtendedTextMessage (text reply quoting something)
+	if ext := msg.GetExtendedTextMessage(); ext != nil {
+		if ci := ext.GetContextInfo(); ci != nil {
+			return ci.QuotedMessage
+		}
+	}
+	// ImageMessage with caption sent as reply
+	if img := msg.GetImageMessage(); img != nil {
+		if ci := img.GetContextInfo(); ci != nil {
+			return ci.QuotedMessage
+		}
+	}
+	// VideoMessage with caption sent as reply
+	if vid := msg.GetVideoMessage(); vid != nil {
+		if ci := vid.GetContextInfo(); ci != nil {
+			return ci.QuotedMessage
+		}
+	}
+	return nil
+}
+
+// getMediaExtension returns a file extension based on the media type.
+func getMediaExtension(mediaType string) string {
+	switch mediaType {
+	case "image":
+		return ".jpg"
+	case "video":
+		return ".mp4"
+	case "audio":
+		return ".ogg"
+	case "document":
+		return ".bin"
+	case "sticker":
+		return ".webp"
+	default:
+		return ".bin"
+	}
+}
+
 func (b *Bot) handleMessage(v *events.Message) {
 	// Skip messages sent by the bot itself
 	if v.Info.IsFromMe {
@@ -218,6 +290,16 @@ func (b *Bot) handleMessage(v *events.Message) {
 	if msg == "" {
 		if v.Message.GetExtendedTextMessage() != nil {
 			msg = v.Message.GetExtendedTextMessage().GetText()
+		}
+	}
+	// Also extract text from image/video/document captions
+	if msg == "" {
+		if v.Message.GetImageMessage() != nil {
+			msg = v.Message.GetImageMessage().GetCaption()
+		} else if v.Message.GetVideoMessage() != nil {
+			msg = v.Message.GetVideoMessage().GetCaption()
+		} else if v.Message.GetDocumentMessage() != nil {
+			msg = v.Message.GetDocumentMessage().GetCaption()
 		}
 	}
 	if msg == "" {
@@ -308,21 +390,82 @@ func (b *Bot) handleMessage(v *events.Message) {
 
 	isGroup := v.Info.Chat.Server == "g.us"
 
+	// --- Media bridge ---
+	// Detect media on the message itself
+	mediaAvailable := hasMedia(v.Message)
+	mediaType := getMediaType(v.Message)
+
+	// Detect media on quoted message
+	quotedMsg := getQuotedMessage(v.Message)
+	quotedMediaAvailable := hasMedia(quotedMsg)
+	quotedMediaType := getMediaType(quotedMsg)
+
+	// DownloadMedia: downloads the media attached to this message,
+	// saves it to a temp file, and returns the file path.
+	downloadMediaFn := func() (string, error) {
+		if !mediaAvailable {
+			return "", fmt.Errorf("no media attached to this message")
+		}
+		data, err := b.client.DownloadAny(b.ctx, v.Message)
+		if err != nil {
+			return "", fmt.Errorf("failed to download media: %w", err)
+		}
+		ext := getMediaExtension(mediaType)
+		tmpFile, err := os.CreateTemp("", "whatskel-media-*"+ext)
+		if err != nil {
+			return "", fmt.Errorf("failed to create temp file: %w", err)
+		}
+		defer tmpFile.Close()
+		if _, err := tmpFile.Write(data); err != nil {
+			return "", fmt.Errorf("failed to write media: %w", err)
+		}
+		absPath, _ := filepath.Abs(tmpFile.Name())
+		return absPath, nil
+	}
+
+	// DownloadQuotedMedia: downloads the media from the quoted message.
+	downloadQuotedMediaFn := func() (string, error) {
+		if !quotedMediaAvailable || quotedMsg == nil {
+			return "", fmt.Errorf("no media in quoted message")
+		}
+		data, err := b.client.DownloadAny(b.ctx, quotedMsg)
+		if err != nil {
+			return "", fmt.Errorf("failed to download quoted media: %w", err)
+		}
+		ext := getMediaExtension(quotedMediaType)
+		tmpFile, err := os.CreateTemp("", "whatskel-quoted-*"+ext)
+		if err != nil {
+			return "", fmt.Errorf("failed to create temp file: %w", err)
+		}
+		defer tmpFile.Close()
+		if _, err := tmpFile.Write(data); err != nil {
+			return "", fmt.Errorf("failed to write quoted media: %w", err)
+		}
+		absPath, _ := filepath.Abs(tmpFile.Name())
+		return absPath, nil
+	}
+
 	ctx := &plugins.Context{
-		Message:            msg,
-		Sender:             v.Info.Sender.String(),
-		SenderName:         senderName,
-		IsGroup:            isGroup,
-		Chat:               chatJID.String(),
-		Args:               args,
-		Prefix:             prefix,
-		Reply:              replyFn,
-		ReplyQuote:         replyQuoteFn,
-		React:              reactFn,
-		Delete:             deleteFn,
-		ReplyImage:         replyImageFn,
-		ReplySticker:       replyStickerFn,
-		SendPrivateMessage: sendPrivateMessageFn,
+		Message:             msg,
+		Sender:              v.Info.Sender.String(),
+		SenderName:          senderName,
+		IsGroup:             isGroup,
+		Chat:                chatJID.String(),
+		Args:                args,
+		Prefix:              prefix,
+		Reply:               replyFn,
+		ReplyQuote:          replyQuoteFn,
+		React:               reactFn,
+		Delete:              deleteFn,
+		ReplyImage:          replyImageFn,
+		ReplySticker:        replyStickerFn,
+		SendPrivateMessage:  sendPrivateMessageFn,
+		HasMedia:            mediaAvailable,
+		HasQuotedMedia:      quotedMediaAvailable,
+		MediaType:           mediaType,
+		QuotedMediaType:     quotedMediaType,
+		DownloadMedia:       downloadMediaFn,
+		DownloadQuotedMedia: downloadQuotedMediaFn,
 	}
 
 	if !b.plugins.Dispatch(cmdName, ctx) {
